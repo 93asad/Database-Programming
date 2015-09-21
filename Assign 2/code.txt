@@ -1,0 +1,135 @@
+declare
+begin
+---------------check if settlement already done today---------------------------
+if (settlement_done_today()) then
+  common.log('Settlement has already been done today. ' ||
+             'Settlement can only be done once a day.');
+              
+---------------check if system is currently doing settlement--------------------
+elsif (settling_transactions()) then
+  common.log('System hasn''t settled all the transactions yet. ' || 
+              'Please try again later.');
+              
+else
+---------------download new data------------------------------------------------
+  insert into FSS_DAILY_TRANSACTIONS(TRANSACTIONNR,       DOWNLOADDATE,
+                                     TERMINALID,          CARDID,
+                                     TRANSACTIONDATE,     CARDOLDVALUE,
+                                     TRANSACTIONAMOUNT,   CARDNEWVALUE,
+                                     ERRORCODE)
+  (select TRANSACTIONNR,       DOWNLOADDATE,
+          TERMINALID,          CARDID,
+          TRANSACTIONDATE,     CARDOLDVALUE,
+          TRANSACTIONAMOUNT,   CARDNEWVALUE,
+          ERRORCODE 
+          
+  from FSS_TRANSACTIONS
+  MINUS
+  select TRANSACTIONNR,       DOWNLOADDATE,
+         TERMINALID,          CARDID,
+         TRANSACTIONDATE,      CARDOLDVALUE,
+         TRANSACTIONAMOUNT,   CARDNEWVALUE,
+         ERRORCODE 
+  
+  from FSS_daily_TRANSACTIONS);
+  commit;
+  
+-------------set date on which settlement started------------------------------------------------
+  insert into fss_run_table(RUNSTART)
+  values(sysdate);
+  commit;
+----------------------check fraudulent-----------------------------------------
+  MARK_FRAUDULENT_TRANSACTIONS();
+
+-----------------check if sysdate is the last day of month----------------------  
+  if(trunc(sysdate) <> trunc(last_day(sysdate))) then
+    update fss_daily_transactions 
+    set TRANSACTIONSTATUS = 'P'
+    where TRANSACTIONNR in (select tr.transactionnr from fss_transactions tr join fss_terminal te on TR.TERMINALID = TE.TERMINALID 
+                             join fss_merchant m on M.MERCHANTID = TE.MERCHANTID 
+    where m.merchantid in (select m.merchantid from fss_transactions tr join fss_terminal te on TR.TERMINALID = TE.TERMINALID 
+                             join fss_merchant m on M.MERCHANTID = TE.MERCHANTID
+                             group by M.MERCHANTID having sum(tr.transactionamount)/100 < (select referencevalue
+                                                                                           from fss_reference
+                                                                                           where referencename = 'Daily Minimum Settlement')));
+                                   commit;
+  else 
+    update fss_daily_transactions
+    set TRANSACTIONSTATUS = null
+    where TRANSACTIONSTATUS = 'P';
+    commit;
+  
+  end if;
+  
+---------------------------settle transactions----------------------------------    
+  insert into fss_daily_settlement(MERCHANTID,   CREDIT,   datesettled)
+  
+  select m.MERCHANTID,   sum(tra.transactionamount),   sysdate
+         
+  from FSS_DAILY_TRANSACTIONS tra JOIN FSS_TERMINAL ter 
+       on TRA.TERMINALID = ter.terminalid JOIN FSS_MERCHANT m
+       on TER.MERCHANTID = m.merchantid
+       
+  where TRA.TRANSACTIONSTATUS is null
+  
+  group by m.merchantid;
+  
+  commit;
+----------------assign lodgement reference number---------------------------
+  assign_lodge_ref_num();
+-----------------------------------------------
+
+  update fss_run_table
+  set runend = sysdate 
+  where runstart is not null and runend is null;
+  commit;
+---------------------set status to 'S'-----------------------  
+  update fss_daily_transactions
+  set transactionstatus = 'S'
+  where transactionstatus is null;
+  commit;
+
+
+---------------------create desk bank file--------------------------------------
+  create_deskbank_file();
+  
+end if;
+end;  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+ 
+  
+
+
+
+
+
+
+
+
+
+
+
+
+

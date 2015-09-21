@@ -1,0 +1,70 @@
+create or replace procedure                     create_deskbank_file
+is
+v_file  utl_file.file_type;
+v_file_name varchar2(50) := 'DS_' || to_char(sysdate, 'DDMMYYYY') || '_AUR.dat';
+v_organization_rec fss_organisation%rowtype;
+v_credit number := 0;
+v_debit number := 0;
+v_record_count number := 0;
+
+cursor cur_merchants is select d.CREDIT,                d.lodgementrefnum, 
+                               m.MERCHANTID,            m.MERCHANTBANKBSB,
+                               m.MERCHANTBANKACCNR,     m.MERCHANTACCOUNTTITLE
+                    from FSS_DAILY_SETTLEMENT d join fss_merchant m 
+                    on d.merchantid = m.merchantid
+                    where d.transactionstatus is null; 
+                    
+begin
+
+v_file := utl_file.fopen ('MY_DIR', v_file_name, 'W');
+utl_file.put_line(v_file, rpad('0', 18, ' ') || 
+                  rpad(lpad(reel_seq.nextval, 2, '0') || 'WBC', 12, ' ') ||
+                  rpad('S/CARD BUS PAYMENTS', 26, ' ') || 
+                  rpad('038759INVOICES', 18, ' ') ||
+                  rpad(to_char(sysdate, 'DDMMYY'), 46, ' '));
+
+for merchant in cur_merchants 
+loop
+  utl_file.put_line(v_file, '1' || substr(merchant.merchantbankbsb, 1, 3) || '-' 
+                    || substr(merchant.merchantbankbsb, 4, 3) 
+                    || merchant.merchantbankaccnr || ' ' || '50'
+                    || lpad(merchant.credit, 10, '0')
+                    || rpad(merchant.merchantaccounttitle, 32, ' ') || 'F '
+                    || merchant.lodgementrefnum || '032-797   001006SMARTCARD TRANS '
+                    || RPAD(0, 8, '0'));
+  update fss_daily_settlement
+  set TRANSACTIONSTATUS = 'S'
+  where merchantid = merchant.merchantid;
+  commit;
+  v_credit := v_credit + merchant.credit;
+  v_record_count := v_record_count + 1;
+end loop;
+
+v_debit := v_credit;
+
+SELECT * into v_organization_rec
+FROM FSS_ORGANISATION
+WHERE ORGNR = 2001;
+
+utl_file.put_line(v_file, '1' || substr(v_organization_rec.orgbsbnr, 1, 3) || '-' 
+                    || substr(v_organization_rec.orgbsbnr, 4, 3) 
+                    || v_organization_rec.ORGBANKACCOUNT || ' ' || '13'
+                    || lpad(v_debit, 10, '0')
+                    || rpad(v_organization_rec.ORGACCOUNTTITLE, 32, ' ') || 'N '
+                    || '800500000000000032-797   001006SMARTCARD TRANS '
+                    || RPAD(0, 8, '0'));
+                    
+v_record_count := v_record_count + 1;
+
+utl_file.put_line(v_file, rpad('7999-999', 20, ' ') || lpad(v_credit - v_debit, 10, '0')
+                  || lpad(v_credit, 10, '0') || lpad(v_debit, 10, '0') 
+                  || lpad(' ', 24, ' ') || lpad(v_record_count, 6, '0')
+                  || lpad(' ', 40, ' '));
+                  
+utl_file.fclose(v_file);
+
+ 
+
+end;
+
+--truncate table fss_daily_settlement

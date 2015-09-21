@@ -1,0 +1,40 @@
+declare  
+
+v_cardnewvalue number;
+v_cardid number;
+
+cursor cur_transactions is select TRANSACTIONNR,       CARDID,
+                                  TRANSACTIONDATE,     CARDOLDVALUE,
+                                  TRANSACTIONAMOUNT,   CARDNEWVALUE,
+                                  ERRORCODE 
+                           from fss_Daily_transactions
+                           order by cardid, transactionNr;
+begin
+
+for a_transaction in cur_transactions
+loop
+--------------------------------------------------------------------------  
+  if (v_cardnewvalue = null) then
+    v_cardnewvalue := a_transaction.cardnewvalue;
+    v_cardid := a_transaction.CARDID;
+    continue;
+  end if;  
+---------------------------------------------------------------------------  
+  if (v_cardid = a_transaction.CARDID) then
+     if (v_cardnewvalue <> a_transaction.cardoldvalue) then  
+       update fss_daily_transactions
+       set errorcode = 'Fraudulent'
+       where transactionnr = a_transaction.transactionnr;
+       commit;
+       
+       v_cardnewvalue := a_transaction.cardnewvalue;
+     else
+       v_cardnewvalue := a_transaction.cardnewvalue;
+     end if;
+  else
+     v_cardnewvalue := a_transaction.cardnewvalue;
+     v_cardid := a_transaction.CARDID;
+  end if; 
+end loop;  
+
+end;

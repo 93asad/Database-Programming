@@ -1,0 +1,92 @@
+create or replace PROCEDURE RM16_forecast 
+IS
+v_days_to_forecast   NUMBER; --number of days to forecast for
+v_day                DATE; --stores date for which volume will be predicted
+
+BEGIN
+
+EXECUTE IMMEDIATE 'truncate table local_rm16';
+SELECT MAX(DAY) INTO v_day FROM V_NEM_RM16;
+
+BEGIN-----------------------------------------------
+SELECT VALUE INTO v_days_to_forecast FROM PARAMETER;
+EXCEPTION WHEN NO_DATA_FOUND 
+THEN COMMON.LOG('No data found in PARAMETER table');
+END;------------------------------------------------
+
+FOR each_day IN 1..v_days_to_forecast --loop to predict avg. volumes for "v_days_to_forecast" no. of days 
+LOOP
+v_day := v_day + 1;
+
+IF( is_holiday( v_day ) ) THEN --TRUE if date in v_date is holiday
+   IF( holidays_in_Past() ) THEN --TRUE if holidays found in past
+      
+      INSERT INTO LOCAL_RM16( SETTLEMENT_RUN_ID,   CHANGE_DATE,  LR,          STATEMENT_TYPE,   
+                              SETTLEMENT_CASE_ID,  TNI,          FRMP ,       DAY,
+                              TRANSACTION_ID,      VOLUME,       METERTYPE,   MDP,
+                              COMPANY_CODE,        HH )
+      
+      SELECT  52,         SYSDATE,      LR,          'FORECAST', 
+              95,         TNI,          FRMP,        v_day,
+              'T-2291',   AVG(VOLUME),  'INTERVAL',  'WBAYM',
+              'DBP',      HH                
+      
+      FROM V_NEM_RM16 
+      WHERE DAY IN ( SELECT HOLIDAY_DATE 
+                     FROM DBP_HOLIDAY ) 
+      GROUP BY  TNI,  LR,  FRMP,  HH;  
+      COMMIT;
+    
+   ELSE --corresponds to the inner IF (if holidays not found in past)
+      INSERT INTO LOCAL_RM16( SETTLEMENT_RUN_ID,   CHANGE_DATE,  LR,          STATEMENT_TYPE,   
+                              SETTLEMENT_CASE_ID,  TNI,          FRMP ,       DAY,
+                              TRANSACTION_ID,      VOLUME,       METERTYPE,   MDP,
+                              COMPANY_CODE,        HH )
+      
+      SELECT  52,         SYSDATE,    LR,          'FORECAST', 
+              95,         TNI,        FRMP,        v_day,
+              'T-2291',   NULL,       'INTERVAL',  'WBAYM',
+              'DBP',      HH                
+                      
+      FROM V_NEM_RM16 
+      GROUP BY  TNI,  LR,  FRMP,  HH;  
+      COMMIT;
+        
+   END IF; --inner IF ends
+   
+ELSIF (SIMILAR_IN_PAST( v_day )) THEN /* Corresponds to the outer IF. Function returns true if date in v_date is not 
+                                         holiday and corresponding week day in past is not holiday too */    
+   INSERT INTO LOCAL_RM16( SETTLEMENT_RUN_ID,   CHANGE_DATE,  LR,          STATEMENT_TYPE,   
+                           SETTLEMENT_CASE_ID,  TNI,          FRMP ,       DAY,
+                           TRANSACTION_ID,      VOLUME,       METERTYPE,   MDP,
+                           COMPANY_CODE,        HH )
+      
+   SELECT  52,           SYSDATE,      LR,          'FORECAST', 
+           95,           TNI,          FRMP,        v_day,
+           'T-2291',     AVG(VOLUME),  'INTERVAL',  'WBAYM',
+           'DBP',        HH                
+                 
+   FROM V_NEM_RM16 
+   WHERE DAY IN ( SELECT SIMILAR_DAY 
+                  FROM SIMILAR_DAYS ) 
+   GROUP BY  TNI,  LR,  FRMP,  HH;  
+   COMMIT;
+
+ELSE --corresponds to ELSIF (executed if there is no coressponding weekday in past for v_day that is not holiday)  
+  INSERT INTO LOCAL_RM16( SETTLEMENT_RUN_ID,   CHANGE_DATE,  LR,          STATEMENT_TYPE,   
+                          SETTLEMENT_CASE_ID,  TNI,          FRMP ,       DAY,
+                          TRANSACTION_ID,      VOLUME,       METERTYPE,   MDP,
+                          COMPANY_CODE,        HH )
+      
+      SELECT  52,          SYSDATE,    LR,          'FORECAST', 
+              95,          TNI,        FRMP,        v_day,
+              'T-2291',    NULL,       'INTERVAL',  'WBAYM',
+              'DBP',       HH                
+                    
+      FROM V_NEM_RM16 
+      GROUP BY  TNI,  LR,  FRMP,  HH;  
+      COMMIT;
+
+END IF; --outer IF ends
+END LOOP;
+END;

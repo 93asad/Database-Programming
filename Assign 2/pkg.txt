@@ -1,0 +1,327 @@
+create or replace package Pkg_FSS_Settlement as 
+procedure DAILYSETTLEMENT;
+procedure DailyBankingSummary(p_date date);
+procedure FraudReport;
+end Pkg_FSS_Settlement;
+/
+CREATE OR REPLACE PACKAGE BODY Pkg_FSS_Settlement AS
+
+procedure ASSIGN_LODGE_REF_NUM is 
+cursor cur_merchants is select lodgementrefnum 
+                        from fss_daily_settlement
+                        where lodgementrefnum is null;
+begin
+for merchant in cur_merchants
+loop
+  update fss_daily_settlement
+  set lodgementrefnum = to_char(sysdate, 'YYYYMMDD') || 
+                        lpad(lodge_seq.nextval, 7, '0')
+  where lodgementrefnum is null and merchantid is not null;
+  commit;
+end loop;
+end;
+
+procedure CHECK_CURRENT_DATE is 
+begin
+if(trunc(sysdate) <> trunc(last_day(sysdate))) then
+    update fss_daily_transactions 
+    set TRANSACTIONSTATUS = 'P'
+    where TRANSACTIONNR in (select tr.transactionnr 
+                            from fss_transactions tr join fss_terminal te on TR.TERMINALID = TE.TERMINALID 
+                            join fss_merchant m on M.MERCHANTID = TE.MERCHANTID 
+                            where m.merchantid in (select m.merchantid 
+                                                   from fss_transactions tr join fss_terminal te on TR.TERMINALID = TE.TERMINALID 
+                                                   join fss_merchant m on M.MERCHANTID = TE.MERCHANTID
+                                                   group by M.MERCHANTID 
+                                                   having sum(tr.transactionamount)/100 < (select referencevalue
+                                                                                           from fss_reference
+                                                                                           where referencename = 'Daily Minimum Settlement')));
+     commit;
+else 
+  update fss_daily_transactions
+  set TRANSACTIONSTATUS = null
+  where TRANSACTIONSTATUS = 'P';
+    
+  commit;
+  
+end if;
+end;
+
+procedure CREATE_DESKBANK_FILE is 
+v_file  utl_file.file_type;
+v_file_name varchar2(50) := 'DS_' || to_char(sysdate, 'DDMMYYYY') || '_AUR.dat';
+v_organization_rec fss_organisation%rowtype;
+v_credit number := 0;
+v_debit number := 0;
+v_record_count number := 0;
+v_my_dir varchar2(10) := 'MY_DIR';
+
+cursor cur_merchants is select d.CREDIT,                d.lodgementrefnum, 
+                               m.MERCHANTID,            m.MERCHANTBANKBSB,
+                               m.MERCHANTBANKACCNR,     m.MERCHANTACCOUNTTITLE
+                    from FSS_DAILY_SETTLEMENT d join fss_merchant m 
+                    on d.merchantid = m.merchantid
+                    where d.transactionstatus is null; 
+                    
+begin
+
+v_file := utl_file.fopen (v_my_dir, v_file_name, 'W');
+utl_file.put_line(v_file, rpad('0', 18, ' ') || 
+                  rpad(lpad(reel_seq.nextval, 2, '0') || 'WBC', 12, ' ') ||
+                  rpad('S/CARD BUS PAYMENTS', 26, ' ') || 
+                  rpad('038759INVOICES', 18, ' ') ||
+                  rpad(to_char(sysdate, 'DDMMYY'), 46, ' '));
+
+for merchant in cur_merchants 
+loop
+  utl_file.put_line(v_file, '1' || substr(merchant.merchantbankbsb, 1, 3) || '-' 
+                    || substr(merchant.merchantbankbsb, 4, 3) 
+                    || merchant.merchantbankaccnr || ' ' || '50'
+                    || lpad(merchant.credit, 10, '0')
+                    || rpad(merchant.merchantaccounttitle, 32, ' ') || 'F '
+                    || merchant.lodgementrefnum || '032-797   001006SMARTCARD TRANS '
+                    || RPAD(0, 8, '0'));
+  update fss_daily_settlement
+  set TRANSACTIONSTATUS = 'S'
+  where merchantid = merchant.merchantid;
+  commit;
+  v_credit := v_credit + merchant.credit;
+  v_record_count := v_record_count + 1;
+end loop;
+
+v_debit := v_credit;
+
+SELECT * into v_organization_rec
+FROM FSS_ORGANISATION
+WHERE ORGNR = 2001;
+
+utl_file.put_line(v_file, '1' || substr(v_organization_rec.orgbsbnr, 1, 3) || '-' 
+                    || substr(v_organization_rec.orgbsbnr, 4, 3) 
+                    || v_organization_rec.ORGBANKACCOUNT || ' ' || '13'
+                    || lpad(v_debit, 10, '0')
+                    || rpad(v_organization_rec.ORGACCOUNTTITLE, 32, ' ') || 'N '
+                    || '800500000000000032-797   001006SMARTCARD TRANS '
+                    || RPAD(0, 8, '0'));
+                    
+v_record_count := v_record_count + 1;
+
+utl_file.put_line(v_file, rpad('7999-999', 20, ' ') || lpad(v_credit - v_debit, 10, '0')
+                  || lpad(v_credit, 10, '0') || lpad(v_debit, 10, '0') 
+                  || lpad(' ', 24, ' ') || lpad(v_record_count, 6, '0')
+                  || lpad(' ', 40, ' '));
+                  
+utl_file.fclose(v_file);
+
+ 
+
+end;
+
+procedure DOWNLOAD_NEW_DATA is 
+begin
+insert into FSS_DAILY_TRANSACTIONS(TRANSACTIONNR,       DOWNLOADDATE,
+                                     TERMINALID,          CARDID,
+                                     TRANSACTIONDATE,     CARDOLDVALUE,
+                                     TRANSACTIONAMOUNT,   CARDNEWVALUE,
+                                     ERRORCODE)
+  (select TRANSACTIONNR,       DOWNLOADDATE,
+          TERMINALID,          CARDID,
+          TRANSACTIONDATE,     CARDOLDVALUE,
+          TRANSACTIONAMOUNT,   CARDNEWVALUE,
+          ERRORCODE 
+          
+  from FSS_TRANSACTIONS
+  MINUS
+  select TRANSACTIONNR,       DOWNLOADDATE,
+         TERMINALID,          CARDID,
+         TRANSACTIONDATE,      CARDOLDVALUE,
+         TRANSACTIONAMOUNT,   CARDNEWVALUE,
+         ERRORCODE 
+  
+  from FSS_daily_TRANSACTIONS);
+  
+  commit;
+end;
+
+procedure MARK_FRAUDULENT_TRANSACTIONS is
+v_cardnewvalue number;
+v_cardid number;
+
+cursor cur_transactions is select TRANSACTIONNR,       CARDID,
+                                  TRANSACTIONDATE,     CARDOLDVALUE,
+                                  TRANSACTIONAMOUNT,   CARDNEWVALUE,
+                                  ERRORCODE 
+                           from fss_Daily_transactions
+                           order by cardid, transactionNr;
+begin
+
+for a_transaction in cur_transactions
+loop
+--------------------------------------------------------------------------  
+  if (v_cardnewvalue = null) then
+    v_cardnewvalue := a_transaction.cardnewvalue;
+    v_cardid := a_transaction.CARDID;
+    continue;
+  end if;  
+---------------------------------------------------------------------------  
+  if (v_cardid = a_transaction.CARDID) then
+     if (v_cardnewvalue <> a_transaction.cardoldvalue) then  
+       update fss_daily_transactions
+       set errorcode = 'Fraudulent'
+       where transactionnr = a_transaction.transactionnr;
+       commit;
+       
+       v_cardnewvalue := a_transaction.cardnewvalue;
+     else
+       v_cardnewvalue := a_transaction.cardnewvalue;
+     end if;
+  else
+     v_cardnewvalue := a_transaction.cardnewvalue;
+     v_cardid := a_transaction.CARDID;
+  end if; 
+end loop;  
+
+end;
+
+procedure DAILYBANKINGSUMMARY(p_date date) is
+v_file  utl_file.file_type;
+v_file_name varchar2(50);
+v_organization_rec fss_organisation%rowtype;
+v_credit number := 0;
+v_debit number := 0;                    
+v_record_count number := 0;
+v_my_dir varchar2(10) := 'MY_DIR';
+v_pageNo number := 1;
+
+cursor cur_merchants is select d.CREDIT,                m.MERCHANTACCOUNTTITLE, 
+                               m.MERCHANTID,            m.MERCHANTBANKBSB,
+                               m.MERCHANTBANKACCNR
+                    from FSS_DAILY_SETTLEMENT d join fss_merchant m 
+                    on d.merchantid = m.merchantid
+                    where trunc(datesettled) = trunc(p_date); 
+                    
+begin
+
+v_file_name := 'DailyBankingSummary(' || to_char(trunc(p_date), 'DD-Mon-YYYY') || ')';
+v_file := utl_file.fopen (v_my_dir, v_file_name, 'W');
+utl_file.put_line(v_file, f_centre('SMARTCARD SETTLEMENT SYSTEM') || chr(13)  
+                  || f_centre('DAILY DESKBANK SUMMARY') || CHR(13)
+                  || 'Date: ' || to_char(p_date, 'DD-Mon-YYYY') 
+                  ||  LPAD('Page '|| v_pageNo, 62));
+utl_file.new_line(v_file);
+utl_file.put_line(v_file, rpad('Merchant ID', 13, ' ') 
+                  || rpad('Merchant Name', 34, ' ') 
+                  || rpad('Account Number', 20, ' ') || rpad(' Debit', 11, ' ')
+                  || rpad('Credit', 8, ' '));
+
+utl_file.put_line(v_file, rpad('-', 10, '-') || ' ' ||  rpad('-', 34, '-') || '  '
+                  || rpad('-', 17, '-') || ' ' || rpad('-', 10, '-') || '   '
+                  || rpad('-', 9, '-'));
+                  
+
+for merchant in cur_merchants 
+loop
+  utl_file.put_line(v_file, '1' || rpad(merchant.merchantid, 11, ' ') 
+                    || rpad(merchant.MERCHANTACCOUNTTITLE, 35, ' ') 
+                    || substr(merchant.merchantbankbsb, 1, 3) || '-' 
+                    || substr(merchant.merchantbankbsb, 4, 3) 
+                    || merchant.merchantbankaccnr || rpad(' ', 15, ' ')
+                    || lpad(to_char(merchant.credit/100, '99999.90'), 9, ' ')); 
+  
+  v_credit := v_credit + merchant.credit;
+  v_record_count := v_record_count + 1;
+end loop;
+
+v_debit := v_credit;
+
+SELECT * into v_organization_rec
+FROM FSS_ORGANISATION
+WHERE ORGNR = 2001;
+
+utl_file.put_line(v_file, rpad(' ', 12, ' ') 
+                  || rpad(v_organization_rec.ORGACCOUNTTITLE, 35, ' ')
+                  || substr(v_organization_rec.orgbsbnr, 1, 3) || '-' 
+                  || substr(v_organization_rec.orgbsbnr, 4, 3) 
+                  || v_organization_rec.ORGBANKACCOUNT || ' '
+                  || lpad(to_char(v_debit/100, '99999.90'), 10, ' ') || chr(13)
+                  || lpad(' ', 64, ' ') || rpad('-', 12, '-') || ' '
+                  || rpad('-', 12, '-') || chr(13) || rpad('BALANCE TOTAL', 64, ' ') 
+                  || lpad(to_char(v_debit/100, '99999.90'), 10, ' ') || ' ' 
+                  || lpad(to_char(v_credit/100, '99999.90'), 12, ' ')
+                  || chr(13) || chr(13) || 'Deskbank file Name : ' 
+                  || 'DS_' || to_char(p_date, 'DDMMYYYY') || '_AUR.dat'
+                  || chr(13) || 'Dispatch Date      : ' || to_char(p_date, 'DD-Mon-YYYY')
+                  || chr(13) || chr(13) || f_centre('******  End of Report ******'));
+                    
+v_record_count := v_record_count + 1;
+             
+utl_file.fclose(v_file);
+
+end;
+
+procedure DAILYSETTLEMENT is 
+begin
+---------------check if settlement already done today---------------------------
+if (settlement_done_today()) then
+  common.log('Settlement has already been done today. ' ||
+             'Settlement can only be done once a day.');
+              
+---------------check if system is currently doing settlement--------------------
+elsif (settling_transactions()) then
+  common.log('System hasn''t settled all the transactions yet. ' || 
+              'Please try again later.');
+              
+else
+---------------download new data------------------------------------------------
+  download_new_data();
+  
+-------------set date on which settlement started------------------------------------------------
+  insert into fss_run_table(RUNSTART)
+  values(sysdate);
+  commit;
+----------------------check fraudulent-----------------------------------------
+  MARK_FRAUDULENT_TRANSACTIONS();
+
+-----------------check if sysdate is the last day of month----------------------  
+  check_current_date();
+  
+---------------------------settle transactions----------------------------------    
+  insert into fss_daily_settlement(MERCHANTID,   CREDIT,   datesettled)
+  
+  select m.MERCHANTID,   sum(tra.transactionamount),   sysdate
+         
+  from FSS_DAILY_TRANSACTIONS tra JOIN FSS_TERMINAL ter 
+       on TRA.TERMINALID = ter.terminalid JOIN FSS_MERCHANT m
+       on TER.MERCHANTID = m.merchantid
+       
+  where TRA.TRANSACTIONSTATUS is null
+  
+  group by m.merchantid;
+  
+  commit;
+----------------assign lodgement reference number---------------------------
+  assign_lodge_ref_num();
+-----------------------------------------------
+
+  update fss_run_table
+  set runend = sysdate 
+  where runstart is not null and runend is null;
+  commit;
+---------------------set status to 'S'-----------------------  
+  update fss_daily_transactions
+  set transactionstatus = 'S'
+  where transactionstatus is null;
+  commit;
+
+
+---------------------create desk bank file--------------------------------------
+  create_deskbank_file();
+
+  
+---------------------create daily settlement report-----------------------------
+  DailyBankingSummary(sysdate);
+  
+end if;
+end;
+
+END Pkg_FSS_Settlement; 
+/

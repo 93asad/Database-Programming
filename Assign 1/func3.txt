@@ -1,0 +1,32 @@
+create or replace FUNCTION           SIMILAR_IN_PAST(p_date IN DATE)
+RETURN boolean
+IS
+
+v_date        VARCHAR2(50) := TO_CHAR(TRUNC(p_date), 'day'); 
+v_test_date   DATE;
+
+BEGIN
+
+EXECUTE IMMEDIATE 'truncate table similar_days';
+
+INSERT INTO SIMILAR_DAYS(SIMILAR_DAY)
+SELECT DISTINCT DAY FROM V_NEM_RM16 
+WHERE TO_CHAR(TRUNC(DAY), 'day') = v_date 
+AND TRUNC(DAY) NOT IN (SELECT HOLIDAY_DATE FROM DBP_HOLIDAY);  
+COMMIT;
+
+BEGIN-------------------------------------------
+SELECT SIMILAR_DAY INTO v_test_date 
+FROM SIMILAR_DAYS;
+
+EXCEPTION
+WHEN NO_DATA_FOUND 
+  THEN v_test_date:= NULL;
+END;--------------------------------------------
+
+RETURN v_test_date IS NOT NULL;
+END;
+
+/* This function accepts date as a parameter, populates the table 
+   SIMILAR_DAYS with dates where dates in V_NEM_RM16 and date in v_date
+   share same weekday name and are not holidays. Return true if v_test_date is null */

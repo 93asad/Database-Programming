@@ -1,0 +1,22 @@
+create or replace FUNCTION                               IS_HOLIDAY(p_date IN DATE) 
+RETURN boolean 
+IS 
+v_date date;
+
+BEGIN
+BEGIN/************************************************************************************/
+
+SELECT HOLIDAY_DATE INTO v_date 
+FROM DBP_HOLIDAY 
+WHERE trunc(HOLIDAY_DATE) = trunc(p_date); 
+
+EXCEPTION  
+WHEN NO_DATA_FOUND 
+  THEN v_date := NULL;  
+
+END;/************************************************************************************/
+
+RETURN v_date IS NOT NULL; 
+END;
+
+/* This function returns TRUE if the date passed as an argument is a holiday*/

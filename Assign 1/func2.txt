@@ -1,0 +1,25 @@
+create or replace FUNCTION           holidays_in_past 
+RETURN boolean 
+IS
+v_date DATE;
+
+BEGIN
+BEGIN/******************************************************************************/
+
+SELECT DISTINCT DAY INTO v_date 
+FROM V_NEM_RM16 
+WHERE day IN ( SELECT HOLIDAY_DATE 
+               FROM DBP_HOLIDAY ) 
+      AND ROWNUM < 2; 
+
+EXCEPTION  
+WHEN NO_DATA_FOUND 
+  THEN v_date := NULL;  
+
+END;/******************************************************************************/
+
+RETURN v_date IS NOT NULL;                      
+
+END;
+
+/* This function returns TRUE if holidays are found in past*/
