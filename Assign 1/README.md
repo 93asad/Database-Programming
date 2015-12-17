@@ -1,4 +1,4 @@
- #Electricity consumption estimator
+#Electricity consumption estimator
  This programme has been developed to help the electricity traders to predict the average consumption of electricity based on the 
  past electricity consumption. This will aid traders to bid into the market daily for the amount of electricity that is to be purchased 
  to satisfy the customer demand. 
