@@ -12,4 +12,6 @@ Description of task:
 - Total settlement amounts that are less than the designated minimum amount are not be settled in the daily transactions until the total settlement amount reaches the minimum settlement amount. At the end of the month, 
 any transaction that has not been processed during the month is finalized, irrespective of the amount
 
+pkg.txt contains entire application code. Copy/paste it in oracle sql developer or any PostgreSQL engine and execute the entire script. Other files contain individual functions used in the project
+
 For more information refer to: FSS SETTLEMENT REPORT
